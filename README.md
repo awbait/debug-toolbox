@@ -65,6 +65,57 @@ kubectl run debug --rm -it -n <namespace> --image=ghcr.io/awbait/debug-toolbox:l
   curl -v http://<service>.<namespace>.svc.cluster.local:<port>
 ```
 
+### Istio Ambient mesh debugging
+
+```bash
+# Check which pods are enrolled in ambient mesh
+kubectl get pods -n <namespace> -l istio.io/dataplane-mode=ambient
+
+# Check namespace enrollment
+kubectl get ns -L istio.io/dataplane-mode
+
+# ztunnel status and workloads
+istioctl ztunnel-config workloads
+istioctl ztunnel-config services
+istioctl ztunnel-config policies
+
+# ztunnel logs (L4 issues, mTLS, HBONE)
+kubectl logs -n istio-system -l app=ztunnel -f
+
+# Waypoint proxy status
+istioctl waypoint list -n <namespace>
+istioctl proxy-status | grep waypoint
+
+# Waypoint Envoy config
+istioctl proxy-config listeners <waypoint-pod>.<namespace>
+istioctl proxy-config routes <waypoint-pod>.<namespace>
+istioctl proxy-config clusters <waypoint-pod>.<namespace>
+
+# Test L4 connectivity (through ztunnel)
+kubectl run debug --rm -it -n <namespace> --image=ghcr.io/awbait/debug-toolbox:latest -- \
+  curl -v http://<service>.<namespace>.svc.cluster.local:<port>
+
+# Check HBONE tunnel (port 15008)
+kubectl run debug --rm -it -n <namespace> --image=ghcr.io/awbait/debug-toolbox:latest -- \
+  curl -kv https://<pod-ip>:15008 --connect-to ::<pod-ip>:15008
+
+# Capture ztunnel traffic on node
+kubectl debug node/<node-name> -it --image=ghcr.io/awbait/debug-toolbox:latest -- \
+  tcpdump -i any port 15008 -nn
+
+# Verify mTLS certs from ztunnel
+kubectl debug node/<node-name> -it --image=ghcr.io/awbait/debug-toolbox:latest -- \
+  openssl s_client -connect <pod-ip>:15008 -alpn h2
+
+# Check iptables rules (ztunnel redirect)
+kubectl debug node/<node-name> -it --image=ghcr.io/awbait/debug-toolbox:latest -- \
+  iptables-save | grep -i ztunnel
+
+# AuthorizationPolicy debugging
+istioctl ztunnel-config policies <pod-name>.<namespace>
+kubectl logs -n istio-system -l app=ztunnel | grep -i "rbac\|denied\|authorization"
+```
+
 ### Load from archive (air-gapped)
 
 ```bash
