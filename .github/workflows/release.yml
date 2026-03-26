@@ -12,6 +12,7 @@ env:
 permissions:
   contents: write
   packages: write
+  security-events: write
 
 jobs:
   release:
@@ -52,6 +53,19 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
 
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
       - name: Export Docker archive
         run: |
           docker save ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }} \
@@ -61,4 +75,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: ${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-amd64.tar.gz
+          files: |
+            ${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-amd64.tar.gz
+            trivy-results.sarif
