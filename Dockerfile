@@ -1,8 +1,8 @@
 FROM alpine:3.21
 
-ARG KUBECTL_VERSION=1.35.3
+ARG KUBECTL_VERSION=1.35.4
 ARG GRPCURL_VERSION=1.9.3
-ARG ISTIOCTL_VERSION=1.29.1
+ARG ISTIOCTL_VERSION=1.29.2
 
 RUN apk add --no-cache \
     # Network diagnostics
@@ -17,6 +17,8 @@ RUN apk add --no-cache \
     iperf3 \
     openssl \
     iproute2 \
+    iptables \
+    ip6tables \
     nmap \
     nmap-ncat \
     # General
