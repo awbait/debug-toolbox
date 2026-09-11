@@ -328,4 +328,28 @@ docker build \
 
 ## Security
 
-Every release is scanned with [Trivy](https://trivy.dev). Results are available in the [Security tab](../../security/code-scanning) and as a SARIF artifact in [Releases](../../releases).
+The image is scanned with [Trivy](https://trivy.dev) in two places:
+
+- **`scan.yml`** - on push to `main`, on pull requests and weekly on a schedule.
+  This is what feeds the [Security tab](../../security/code-scanning): code scanning
+  alerts only exist for branches and pull requests, so a tag-triggered upload shows
+  up as an analysis with zero alerts. The weekly run matters on its own - new CVEs
+  appear in an image nobody rebuilt.
+- **`release.yml`** - attaches `trivy-results.sarif` to each entry in
+  [Releases](../../releases), for the record and for offline review.
+
+Both runs print a CRITICAL/HIGH table into the GitHub Actions run summary, so the
+findings are readable without downloading anything.
+
+Reading a SARIF file by hand:
+
+```bash
+gh release download v1.0.2 -p trivy-results.sarif
+# or straight from the API, without a release:
+gh api repos/<owner>/<repo>/code-scanning/analyses
+gh api -H "Accept: application/sarif+json"   repos/<owner>/<repo>/code-scanning/analyses/<analysis_id>
+```
+
+Most findings are Go dependencies compiled into `istioctl`, `kubectl`, `helm`,
+`stern` and `grpcurl`, not Alpine packages - worth keeping in mind before reading a
+CVE about Envoy or the Istio control plane as something this image runs.

@@ -12,7 +12,6 @@ env:
 permissions:
   contents: write
   packages: write
-  security-events: write
 
 jobs:
   release:
@@ -60,11 +59,26 @@ jobs:
           format: sarif
           output: trivy-results.sarif
 
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+      # No upload-sarif here: a tag ref produces an analysis but no alerts.
+      # The Security tab is fed by scan.yml, which runs on main.
+      - name: Trivy table
+        uses: aquasecurity/trivy-action@master
         with:
-          sarif_file: trivy-results.sarif
+          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          format: table
+          output: trivy-table.txt
+          severity: CRITICAL,HIGH
+
+      - name: Readable summary on the run page
+        if: always()
+        run: |
+          {
+            echo '### Trivy: CRITICAL and HIGH'
+            echo ''
+            echo '```'
+            cat trivy-table.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export Docker archive
         run: |
