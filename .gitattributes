@@ -1,0 +1,3 @@
+# core.autocrlf on Windows would hand CRLF files to `docker build`, and a shebang
+# with a trailing \r means "bad interpreter" inside the image. Keep LF everywhere.
+* text=auto eol=lf
