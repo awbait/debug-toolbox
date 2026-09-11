@@ -1,0 +1,54 @@
+# ServiceAccount for debug-toolbox pods.
+#
+# Without it a pod gets the namespace's `default` ServiceAccount, which as a rule
+# may do nothing at all - kubectl and istioctl answer Forbidden.
+#
+# istioctl ztunnel-config needs pods/exec and pods/portforward in istio-system,
+# kubectl-ko needs exec into the kube-ovn pods. That is close to full read access
+# plus exec, so this binds cluster-admin: it is a debugging account, created for
+# the duration of an investigation and deleted afterwards.
+#
+#   kubectl apply -f debug-rbac.yaml
+#   kubectl delete -f debug-rbac.yaml   # when done
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: debug-toolbox
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: debug-toolbox
+subjects:
+  - kind: ServiceAccount
+    name: debug-toolbox
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Long-lived pod to exec into, instead of a new `kubectl run` every time.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-toolbox
+  namespace: default
+  labels:
+    app: debug-toolbox
+    # Stay out of the mesh: the toolbox should see the network as it is,
+    # not through ztunnel redirection. Drop this label when you want the
+    # toolbox itself to be captured.
+    istio.io/dataplane-mode: none
+spec:
+  serviceAccountName: debug-toolbox
+  containers:
+    - name: toolbox
+      image: registry.internal/debug-toolbox:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        capabilities:
+          add: ["NET_ADMIN", "NET_RAW"]
+  restartPolicy: Never

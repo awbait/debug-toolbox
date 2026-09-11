@@ -1,0 +1,183 @@
+#!/bin/bash
+# Ambient mesh troubleshooting: the order that works.
+# Go top-down. Every step below assumes the previous one is green.
+# Starting at tcpdump costs hours - it is step 5, not step 1.
+
+# The image reference used in the examples below. In an air-gapped cluster
+# the image lives in the internal registry, so override it:
+#   export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.1.0
+IMAGE="${TOOLBOX_IMAGE:-<registry>/debug-toolbox:latest}"
+
+sed "s|@IMAGE@|$IMAGE|g" <<'EOF'
+=======================================================================
+ AMBIENT MESH TROUBLESHOOTING - CHECK IN THIS ORDER
+=======================================================================
+
+ L4 only: traffic is captured by ztunnel. No sidecars anywhere.
+
+-----------------------------------------------------------------------
+ 0. PERMISSIONS FIRST
+-----------------------------------------------------------------------
+ tcpdump, iptables, nsenter and conntrack need capabilities that a
+ plain debug pod does NOT have. Half the commands below are silent or
+ empty without them.
+
+   # network tools inside a pod's netns (NET_ADMIN, NET_RAW)
+   kubectl debug -it <pod> -n <ns> --profile=netadmin \
+     --image=@IMAGE@ -- bash
+
+   # node level: host netns, host pid, full privileges
+   kubectl debug node/<node> -it --profile=sysadmin \
+     --image=@IMAGE@ -- bash
+
+ On the node shell the host root is /host:
+   chroot /host      # or: nsenter -t 1 -m -u -n -i bash
+
+ kubectl says "localhost:8080 connection refused" or "Forbidden"?
+ There is no kubeconfig, or the ServiceAccount has no rights:
+   kubeconfig-from-sa          # build one from the SA token
+   kubectl auth can-i --list   # what this token may actually do
+   # see debug-rbac.yaml in the debug-toolbox repo
+
+-----------------------------------------------------------------------
+ 1. DOES THE APP ACTUALLY LISTEN? (do this first, always)
+-----------------------------------------------------------------------
+ Loopback bypasses redirection entirely - if this fails, the mesh is
+ not your problem.
+
+   kubectl exec -it <pod> -n <ns> -- curl -sv http://127.0.0.1:<port>/
+   kubectl exec -it <pod> -n <ns> -- ss -ltnp
+
+ Watch for:
+   - listener bound to 127.0.0.1 only: unreachable from outside the pod,
+     must bind 0.0.0.0
+   - a hand-made socat/nc stub that accepts the connection and then
+     says nothing. Use a real server instead:
+       python3 -m http.server <port>
+
+   # quick echo server that actually answers
+   python3 -m http.server 8080
+
+-----------------------------------------------------------------------
+ 2. IS THE POD REALLY IN THE MESH?
+-----------------------------------------------------------------------
+   # namespace enrollment
+   kubectl get ns <ns> -L istio.io/dataplane-mode
+
+   # per-pod opt-out
+   kubectl get pod <pod> -n <ns> \
+     -o jsonpath='{.metadata.labels.istio\.io/dataplane-mode}{"\n"}'
+
+   # the decisive one: istio-cni sets this annotation after it has
+   # actually programmed the redirection
+   kubectl get pod <pod> -n <ns> \
+     -o jsonpath='{.metadata.annotations.ambient\.istio\.io/redirection}{"\n"}'
+   # expected: enabled
+
+   # no annotation -> look at istio-cni on that node
+   kubectl logs -n istio-system -l k8s-app=istio-cni-node --tail=100 \
+     --field-selector spec.nodeName=<node>
+
+-----------------------------------------------------------------------
+ 3. WHAT DOES ZTUNNEL SEE?
+-----------------------------------------------------------------------
+   istioctl ztunnel-config workloads | grep <pod-or-ip>
+   istioctl ztunnel-config services  -n <ns>
+   istioctl ztunnel-config policies  -n <ns>
+   istioctl ztunnel-config certificates | grep <ns>
+
+   # ztunnel pod on the node in question
+   kubectl get pods -n istio-system -l app=ztunnel -o wide
+
+   # live logs (connection open/close, HBONE, RBAC verdicts)
+   stern -n istio-system -l app=ztunnel
+   kubectl logs -n istio-system -l app=ztunnel | grep -iE "rbac|denied|authorization"
+
+ A workload missing from `ztunnel-config workloads` means step 2 lied:
+ the pod is not redirected, whatever the labels say.
+
+-----------------------------------------------------------------------
+ 4. POLICY (only after step 3 shows the workload)
+-----------------------------------------------------------------------
+ L4 only: AuthorizationPolicy with ports/principals/namespaces.
+ HTTP-level rules (paths, methods, headers) are NOT enforced without
+ a waypoint - they will silently not apply.
+
+   kubectl get authorizationpolicy -A
+   istioctl ztunnel-config policies -n <ns> -o json | jq .
+
+-----------------------------------------------------------------------
+ 5. PACKETS - pod netns, then node
+-----------------------------------------------------------------------
+   # find the pod's netns from the node (sysadmin profile)
+   PID=$(chroot /host crictl inspect --output go-template \
+         --template '{{.info.pid}}' <container-id>)
+   nsenter -t $PID -n ss -ltnp
+   nsenter -t $PID -n tcpdump -i any -nn port <port>
+
+   # node level: HBONE between ztunnels
+   tcpdump -i any -nn port 15008
+
+   # ztunnel inbound/outbound plaintext capture ports
+   #   15008 HBONE (mTLS, HTTP/2)   15006 inbound   15001 outbound
+   #   15053 DNS                    15021 health
+
+   # HBONE is HTTP/2 - a plain curl tells you little
+   nghttp -nv https://<pod-ip>:15008
+   openssl s_client -connect <pod-ip>:15008 -alpn h2
+
+   # whole streams instead of single packets
+   tcpflow -i any -c port <port>
+
+-----------------------------------------------------------------------
+ 6. REDIRECTION RULES ON THE NODE (legacy, not nft!)
+-----------------------------------------------------------------------
+ istio-cni programs the LEGACY tables. The nft view can look empty and
+ mislead you completely.
+
+   iptables-legacy-save  | grep -i istio
+   ip6tables-legacy-save | grep -i istio
+   nft list ruleset | head -50          # the other half of the stack
+
+   # inside the pod netns
+   nsenter -t $PID -n iptables-legacy -t mangle -L -n -v
+   nsenter -t $PID -n iptables-legacy -t nat    -L -n -v
+
+   # is there a NAT translation for the ztunnel link-local address?
+   conntrack -L | grep 169.254.7.127
+   conntrack -L -d <pod-ip>
+   conntrack -S                          # drops / insert_failed
+
+   # interfaces and offloads (istioin/istioout, veth pairs)
+   ip -d link show
+   ethtool -k <iface> | head -20
+
+-----------------------------------------------------------------------
+ 7. CNI LAYER - kube-ovn
+-----------------------------------------------------------------------
+   kubectl ko diagnose all
+   kubectl ko nbctl show
+   kubectl ko nbctl lr-policy-list ovn-cluster
+   kubectl ko trace <ns>/<pod> <dst-ip> <proto> <dst-port>
+   # kubectl-ko picks the ovn-central leader itself - do not guess it
+
+-----------------------------------------------------------------------
+ 8. CONTROL PLANE / INSTALL
+-----------------------------------------------------------------------
+   istioctl version
+   istioctl analyze -n <ns>
+   kubectl get istiorevision,istiocni,ztunnel -A
+   helm -n istio-system list
+   helm -n istio-system get manifest <release> | less   # what really rendered
+   stern -n istio-system -l app=istiod
+
+-----------------------------------------------------------------------
+ WHO HOLDS WHAT
+-----------------------------------------------------------------------
+   lsof -i :<port>          lsof -p <pid>          ss -ltnp
+
+=======================================================================
+ Rule of thumb: 127.0.0.1 -> redirection annotation -> ztunnel-config
+ -> policy -> packets. Never the other way round.
+=======================================================================
+EOF
