@@ -5,7 +5,7 @@
 
 # The image reference used in the examples below. In an air-gapped cluster
 # the image lives in the internal registry, so override it:
-#   export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.1.0
+#   export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.2.0
 IMAGE="${TOOLBOX_IMAGE:-<registry>/debug-toolbox:latest}"
 
 sed "s|@IMAGE@|$IMAGE|g" <<'EOF'

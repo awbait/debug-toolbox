@@ -223,7 +223,7 @@ GHCR outside, the internal registry in an isolated cluster:
 
 ```bash
 export TOOLBOX_IMAGE=ghcr.io/awbait/debug-toolbox:latest
-# export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.1.0
+# export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.2.0
 ```
 
 ### Pull
@@ -337,18 +337,18 @@ is as long as it is.
 
 ```bash
 # 1. Outside: download the archive from GitHub Releases (or docker save yourself)
-docker load -i debug-toolbox-v1.1.0-amd64.tar.gz
+docker load -i debug-toolbox-v1.2.0-amd64.tar.gz
 
 # 2. Retag into the internal registry and push
-docker tag debug-toolbox:v1.1.0 registry.internal/debug-toolbox:v1.1.0
-docker push registry.internal/debug-toolbox:v1.1.0
+docker tag debug-toolbox:v1.2.0 registry.internal/debug-toolbox:v1.2.0
+docker push registry.internal/debug-toolbox:v1.2.0
 ```
 
 `ambient-check` prints the image reference in its examples - point it at your
 registry:
 
 ```bash
-export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.1.0
+export TOOLBOX_IMAGE=registry.internal/debug-toolbox:v1.2.0
 ambient-check
 ```
 
@@ -376,9 +376,9 @@ docker build -t debug-toolbox:latest .
 
 # Override tool versions
 docker build \
-  --build-arg KUBECTL_VERSION=1.35.3 \
-  --build-arg ISTIOCTL_VERSION=1.29.1 \
-  --build-arg GRPCURL_VERSION=1.9.3 \
+  --build-arg KUBECTL_VERSION=1.35.9 \
+  --build-arg ISTIOCTL_VERSION=1.29.8 \
+  --build-arg GRPCURL_VERSION=1.9.4 \
   --build-arg STERN_VERSION=1.34.0 \
   --build-arg KUBE_OVN_REF=v1.15.24 \
   -t debug-toolbox:latest .
@@ -402,7 +402,7 @@ findings are readable without downloading anything.
 Reading a SARIF file by hand:
 
 ```bash
-gh release download v1.0.2 -p trivy-results.sarif
+gh release download v1.2.0 -p trivy-results.sarif
 # or straight from the API, without a release:
 gh api repos/<owner>/<repo>/code-scanning/analyses
 gh api -H "Accept: application/sarif+json"   repos/<owner>/<repo>/code-scanning/analyses/<analysis_id>
