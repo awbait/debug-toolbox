@@ -27,6 +27,8 @@ RUN apk add --no-cache \
     tcpflow \
     nmap \
     nmap-ncat \
+    # TLS trust: update-ca-certificates, see certs/ and ca-reload in bashrc
+    ca-certificates \
     # Packet filtering: istio-cni writes its rules into the legacy tables,
     # the nft view can look empty. iptables-legacy also ships ip6tables-legacy.
     iptables \
@@ -77,6 +79,17 @@ RUN curl -fsSL "https://github.com/stern/stern/releases/download/v${STERN_VERSIO
 RUN curl -fsSL "https://raw.githubusercontent.com/kubeovn/kube-ovn/${KUBE_OVN_REF}/dist/images/kubectl-ko" \
       -o /usr/local/bin/kubectl-ko \
     && chmod +x /usr/local/bin/kubectl-ko
+
+# Corporate CAs baked in at build time: every *.crt / *.pem from certs/ goes into
+# the system bundle. Runtime CAs are handled by ca-reload in bashrc instead.
+COPY certs/ /tmp/certs/
+RUN find /tmp/certs -type f \( -name '*.crt' -o -name '*.pem' \) \
+      -exec sh -c 'for f; do b=$(basename "$f"); cp "$f" "/usr/local/share/ca-certificates/${b%.*}.crt"; done' _ {} + \
+    && update-ca-certificates \
+    && rm -rf /tmp/certs \
+    # Mount point for runtime CAs. World-writable so kubectl cp works under any UID.
+    && mkdir -p /etc/debug-toolbox/ca.d \
+    && chmod 1777 /etc/debug-toolbox/ca.d
 
 # ambient-check - troubleshooting order cheat sheet
 # kubeconfig-from-sa - kubeconfig out of the in-cluster ServiceAccount token

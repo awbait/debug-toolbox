@@ -12,7 +12,7 @@ no sidecar-specific recipes here.
 | TCP/UDP | `tcpdump`, `tcpflow`, `nc`, `ncat`, `socat`, `nmap` |
 | Connectivity | `ping`, `traceroute`, `tracepath`, `mtr` |
 | HTTP/2, gRPC | `curl`, `wget`, `nghttp`, `grpcurl` |
-| TLS | `openssl s_client` |
+| TLS | `openssl s_client`, `update-ca-certificates`, `ca-reload` |
 | Sockets/Routes | `ss`, `ip`, `netstat`, `route`, `lsof`, `ethtool` |
 | Packet filtering | `iptables`, `ip6tables`, `iptables-legacy`, `ip6tables-legacy`, `nft`, `conntrack` |
 | Namespaces | `nsenter`, `lsns`, `unshare` (util-linux) |
@@ -123,6 +123,63 @@ docker run --rm -it   -v "$HOME/.kube:/root/.kube:ro"   -e KUBECONFIG=/root/.kub
 
 A mounted kubeconfig or an explicit `KUBECONFIG` always wins over the generated one.
 
+## Custom CA certificates
+
+Internal registries, Keycloak, Vault and the like are usually signed by a corporate
+CA. Two ways to make `curl`, `openssl`, `python3`, `kubectl`, `helm`, `istioctl`,
+`grpcurl` and `stern` trust it.
+
+### At build time: `certs/`
+
+Put PEM files (`*.crt` or `*.pem`) into `certs/` and rebuild. They go into the
+system store via `update-ca-certificates`, so they work everywhere, including
+non-interactive `kubectl exec ... -- curl`. Right for a CA that every cluster of
+yours needs.
+
+### At runtime: `/etc/debug-toolbox/ca.d`
+
+Any PEM file in `/etc/debug-toolbox/ca.d` (override with `EXTRA_CA_DIR`) is picked
+up when an interactive shell starts: `bashrc` appends it to a copy of the system
+bundle in `/tmp` and exports `SSL_CERT_FILE` and `CURL_CA_BUNDLE`. Root is not
+needed, a read-only `/etc` is fine.
+
+```bash
+# Docker
+docker run --rm -it -v "$PWD/my-ca:/etc/debug-toolbox/ca.d:ro" $TOOLBOX_IMAGE bash
+
+# Kubernetes: CA from a ConfigMap
+kubectl create configmap corp-ca --from-file=corp-root.crt
+kubectl run debug --rm -it --image=$TOOLBOX_IMAGE --overrides='{
+  "spec": {
+    "containers": [{
+      "name": "debug", "image": "'"$TOOLBOX_IMAGE"'", "stdin": true, "tty": true,
+      "command": ["bash"],
+      "volumeMounts": [{"name": "ca", "mountPath": "/etc/debug-toolbox/ca.d", "readOnly": true}]
+    }],
+    "volumes": [{"name": "ca", "configMap": {"name": "corp-ca"}}]
+  }
+}'
+```
+
+No volume possible (`kubectl debug`, a pod already running)? Copy the file in and
+reload the current shell:
+
+```bash
+kubectl cp corp-root.crt <pod>:/etc/debug-toolbox/ca.d/ -c <container>
+# inside the shell
+ca-reload
+```
+
+The directory is world-writable for exactly this reason. Shells opened after the
+copy pick it up on their own.
+
+Limits of the runtime path:
+
+- **Interactive shells only.** `kubectl exec <pod> -- curl ...` without `-it bash`
+  does not read `bashrc`; pass `--cacert` there, or bake the CA in.
+- Files that are not PEM certificates are skipped with a warning. Convert DER
+  first: `openssl x509 -inform der -in ca.cer -out ca.crt`.
+
 ## `ambient-check` - the cheat sheet
 
 The image ships `/usr/local/bin/ambient-check`: the troubleshooting steps in the
@@ -149,6 +206,7 @@ An interactive shell (`kubectl exec -it ... -- bash`, `docker run -it ... bash`)
   is a plain script and kubectl cannot complete it. Refresh the list in `bashrc`
   when kube-ovn is upgraded.
 - a kubeconfig built from the ServiceAccount token, see above.
+- extra CAs from `/etc/debug-toolbox/ca.d` and the `ca-reload` function, see above.
 
 Setup lives in `/etc/bash/bashrc`, not `~/.bashrc`: Alpine's bash reads it for login
 shells (`bash -l`) and under a non-root UID too, both of which skip `~/.bashrc`.
