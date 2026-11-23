@@ -13,6 +13,12 @@ sed "s|@IMAGE@|$IMAGE|g" <<'EOF'
  AMBIENT MESH TROUBLESHOOTING - CHECK IN THIS ORDER
 =======================================================================
 
+ Automated first pass (read-only by default, --probe for live curl/dns):
+   mesh-debug status
+   mesh-debug ingress -n <ns> [gateway]        # + --probe / --format json
+   mesh-debug egress  -n <ns> [name]           # mesh or direct; any of 3 NS
+   mesh-debug ztunnel -n <ns> [--pod <pod>]
+
  L4 only: traffic is captured by ztunnel. No sidecars anywhere.
 
 -----------------------------------------------------------------------

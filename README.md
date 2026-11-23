@@ -22,7 +22,7 @@ no sidecar-specific recipes here.
 | Scripting | `python3`, `jq`, `yq` |
 | System | `strace`, `htop`, `procps` |
 | Utils | `vim`, `bash`, `grep` |
-| Helpers | `ambient-check`, `kubeconfig-from-sa`, bash completion |
+| Helpers | `mesh-debug`, `ambient-check`, `kubeconfig-from-sa`, bash completion |
 
 ### Why some of these are in here
 
@@ -179,6 +179,29 @@ Limits of the runtime path:
   does not read `bashrc`; pass `--cacert` there, or bake the CA in.
 - Files that are not PEM certificates are skipped with a warning. Convert DER
   first: `openssl x509 -inform der -in ca.cer -out ca.crt`.
+
+## `mesh-debug` - automated chart diagnostics
+
+The image ships `/usr/local/bin/mesh-debug` (also attached as standalone Linux/Windows/macOS binaries in Releases) — a zero-dependency Go CLI that diagnoses `ingress-gateway` and `egress-gateway` installations in **Istio Ambient + Kube-OVN**:
+
+```bash
+# Read-only diagnostics (default, safe to run anytime)
+mesh-debug status
+mesh-debug ingress -n <namespace> [gateway-name]
+mesh-debug egress  -n <namespace> [name]        # accepts senders, waypoint, or VEG namespace
+mesh-debug ztunnel -n <namespace> [--pod <pod>]
+
+# Active probes (loopback check + temporary debug-toolbox pod with auto-cleanup)
+mesh-debug ingress -n <namespace> --probe
+mesh-debug egress  -n <namespace> --probe [--proxy http://10.192.95.164:8090]
+
+# Machine-readable JSON output for LLM agents / automation
+mesh-debug ingress -n <namespace> --format json
+mesh-debug egress  -n <namespace> --format markdown --verbose
+```
+
+Exit codes: `0` (`HEALTHY`/`DEGRADED`), `1` (CLI/runtime error), `2` (`BROKEN`).
+For running `mesh-debug` from an internal LLM agent, see [`LLM-GUIDE.md`](LLM-GUIDE.md).
 
 ## `ambient-check` - the cheat sheet
 
