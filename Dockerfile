@@ -1,3 +1,16 @@
+# Stage 1: build mesh-debug static binary (pure Go stdlib, zero external deps)
+FROM golang:1.24-alpine AS builder
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/mesh-debug ./cmd/mesh-debug
+
+# Stage 2: air-gapped Alpine debug-toolbox runtime
 FROM alpine:3.24
 
 ARG TARGETARCH
@@ -91,10 +104,13 @@ RUN find /tmp/certs -type f \( -name '*.crt' -o -name '*.pem' \) \
     && mkdir -p /etc/debug-toolbox/ca.d \
     && chmod 1777 /etc/debug-toolbox/ca.d
 
+# mesh-debug - automated Istio Ambient + Kube-OVN diagnostics CLI
+COPY --from=builder /out/mesh-debug /usr/local/bin/mesh-debug
+
 # ambient-check - troubleshooting order cheat sheet
 # kubeconfig-from-sa - kubeconfig out of the in-cluster ServiceAccount token
 COPY ambient-check kubeconfig-from-sa /usr/local/bin/
-RUN chmod +x /usr/local/bin/ambient-check /usr/local/bin/kubeconfig-from-sa
+RUN chmod +x /usr/local/bin/ambient-check /usr/local/bin/kubeconfig-from-sa /usr/local/bin/mesh-debug
 
 # Shell completion. Generated at build time, loaded on demand at runtime.
 RUN COMP=/usr/share/bash-completion/completions \

@@ -72,5 +72,8 @@ alias ko='kubectl ko'
 complete -W "nb sb nbctl sbctl vsctl ofctl dpctl appctl tcpdump trace ovn-trace \
 diagnose env-check reload log perf icnbctl icsbctl acl-sample" ko
 
+# mesh-debug subcommand completion
+complete -W "status ingress egress ztunnel version help" mesh-debug
+
 # ambient-check prints this image reference in its examples
 export TOOLBOX_IMAGE="${TOOLBOX_IMAGE:-<registry>/debug-toolbox:latest}"
