@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/awbait/debug-toolbox/internal/checks/common"
 	"github.com/awbait/debug-toolbox/internal/checks/egress"
 	"github.com/awbait/debug-toolbox/internal/checks/ingress"
+	"github.com/awbait/debug-toolbox/internal/checks/policies"
 	"github.com/awbait/debug-toolbox/internal/k8s"
 	"github.com/awbait/debug-toolbox/internal/probe"
 	"github.com/awbait/debug-toolbox/internal/report"
@@ -48,7 +50,7 @@ func main() {
 	case "version", "--version":
 		fmt.Printf("mesh-debug %s\n", version)
 		return
-	case "status", "ingress", "egress", "ztunnel":
+	case "status", "ingress", "egress", "ztunnel", "policies":
 		os.Exit(runSubcommand(subcmd, os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", subcmd)
@@ -57,10 +59,24 @@ func main() {
 	}
 }
 
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 func runSubcommand(subcmd string, args []string) int {
 	fs := flag.NewFlagSet("mesh-debug "+subcmd, flag.ContinueOnError)
 	var cf commonFlags
 	var podName string
+	var toTargets stringSliceFlag
+	var captureDur time.Duration
+	var captureMode string
+	var captureNS string
+	var emitPolicies bool
+	var policyName string
 
 	defaultImage := os.Getenv("TOOLBOX_IMAGE")
 	if defaultImage == "" {
@@ -83,6 +99,14 @@ func runSubcommand(subcmd string, args []string) int {
 	if subcmd == "ztunnel" {
 		fs.StringVar(&podName, "pod", "", "Filter ztunnel diagnostics to a specific pod")
 	}
+	if subcmd == "policies" {
+		fs.Var(&toTargets, "to", "Simulate target path (repeatable: kube-apiserver, coredns, istiod, ns/svc:port, ip:port)")
+		fs.DurationVar(&captureDur, "capture", 0, "Live packet capture duration (e.g. 30s) via tcpdump to discover connection attempts")
+		fs.StringVar(&captureMode, "capture-mode", "node", "Capture mode: node (default, works with PodSecurity baseline/restricted) | ephemeral")
+		fs.StringVar(&captureNS, "capture-ns", "default", "Namespace for temporary privileged node-capture pod")
+		fs.BoolVar(&emitPolicies, "emit-policies", false, "Generate console-charts/policies values.yaml draft")
+		fs.StringVar(&policyName, "policy-name", "", "Optional 2..6 char policy name for --emit-policies")
+	}
 
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -93,8 +117,12 @@ func runSubcommand(subcmd string, args []string) int {
 		target = fs.Arg(0)
 	}
 
-	if (subcmd == "ingress" || subcmd == "egress" || subcmd == "ztunnel") && cf.Namespace == "" {
+	if (subcmd == "ingress" || subcmd == "egress" || subcmd == "ztunnel" || subcmd == "policies") && cf.Namespace == "" {
 		fmt.Fprintf(os.Stderr, "error: -n / --namespace is required for %q\n", subcmd)
+		return 1
+	}
+	if subcmd == "policies" && target == "" {
+		fmt.Fprintf(os.Stderr, "error: target pod or workload (e.g. <pod> or deploy/<name>) is required for \"policies\"\n")
 		return 1
 	}
 
@@ -135,6 +163,30 @@ func runSubcommand(subcmd string, args []string) int {
 		})
 	case "ztunnel":
 		rep = common.RunZtunnelReport(ctx, client, version, cf.Namespace, podName, cf.Since, cf.Verbose)
+	case "policies":
+		rep = policies.Run(ctx, client, policies.Options{
+			Version:      version,
+			Namespace:    cf.Namespace,
+			Target:       target,
+			Since:        cf.Since,
+			To:           toTargets,
+			Capture:      captureDur,
+			CaptureMode:  captureMode,
+			CaptureNS:    captureNS,
+			ToolboxImage: cf.ToolboxImage,
+			EmitPolicies: emitPolicies,
+			PolicyName:   policyName,
+			Verbose:      cf.Verbose,
+		})
+	}
+
+	if subcmd == "policies" && strings.EqualFold(cf.Format, "yaml") {
+		if y := rep.Metadata["policies_values_yaml"]; y != "" {
+			fmt.Print(y)
+			return rep.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "error: --format yaml requires --emit-policies\n")
+		return 1
 	}
 
 	useColor := !cf.NoColor && isTerminal(os.Stdout)
@@ -168,6 +220,7 @@ Commands:
   ingress -n <ns> [gateway]      Diagnose ingress-gateway (Gateway, TLS, Routes, ReferenceGrant, Policies, ztunnel)
   egress  -n <ns> [name]         Diagnose egress-gateway (mesh & direct; accepts senders, waypoint, or VEG namespace)
   ztunnel -n <ns> [--pod <pod>]  Inspect ambient redirection, ztunnel-config workloads, and filtered ztunnel logs
+  policies -n <ns> <pod|deploy/x> Map pod/operator/gateway traffic hops (NP, ztunnel, PA, AP), optional --capture & --emit-policies
   version                        Print version
 
 Common Flags:

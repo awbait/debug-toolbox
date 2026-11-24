@@ -190,14 +190,16 @@ mesh-debug status
 mesh-debug ingress -n <namespace> [gateway-name]
 mesh-debug egress  -n <namespace> [name]        # accepts senders, waypoint, or VEG namespace
 mesh-debug ztunnel -n <namespace> [--pod <pod>]
+mesh-debug policies -n <namespace> <pod|deploy/x> [--to kube-apiserver|ns/svc:port] [--capture 30s] [--emit-policies]
 
 # Active probes (loopback check + temporary debug-toolbox pod with auto-cleanup)
 mesh-debug ingress -n <namespace> --probe
 mesh-debug egress  -n <namespace> --probe [--proxy http://10.192.95.164:8090]
 
-# Machine-readable JSON output for LLM agents / automation
+# Machine-readable JSON output / generated console-charts/policies values.yaml
 mesh-debug ingress -n <namespace> --format json
 mesh-debug egress  -n <namespace> --format markdown --verbose
+mesh-debug policies -n <namespace> deploy/my-app --capture 30s --emit-policies --format yaml > values.yaml
 ```
 
 Exit codes: `0` (`HEALTHY`/`DEGRADED`), `1` (CLI/runtime error), `2` (`BROKEN`).

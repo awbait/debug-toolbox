@@ -5,11 +5,18 @@ import (
 	"strings"
 )
 
+type OwnerReference struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Controller *bool  `json:"controller,omitempty"`
+}
+
 type ObjectMeta struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Annotations map[string]string `json:"annotations,omitempty"`
+	Name            string            `json:"name"`
+	Namespace       string            `json:"namespace,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+	OwnerReferences []OwnerReference  `json:"ownerReferences,omitempty"`
 }
 
 type Condition struct {
@@ -35,9 +42,11 @@ type Namespace struct {
 type Pod struct {
 	Metadata ObjectMeta `json:"metadata"`
 	Spec     struct {
-		NodeName           string `json:"nodeName"`
-		ServiceAccountName string `json:"serviceAccountName"`
-		Containers         []struct {
+		NodeName                     string `json:"nodeName"`
+		ServiceAccountName           string `json:"serviceAccountName"`
+		HostNetwork                  bool   `json:"hostNetwork,omitempty"`
+		AutomountServiceAccountToken *bool  `json:"automountServiceAccountToken,omitempty"`
+		Containers                   []struct {
 			Name  string `json:"name"`
 			Ports []struct {
 				Name          string `json:"name"`
@@ -54,6 +63,7 @@ type Pod struct {
 			Name         string `json:"name"`
 			Ready        bool   `json:"ready"`
 			RestartCount int    `json:"restartCount"`
+			ContainerID  string `json:"containerID,omitempty"`
 			State        struct {
 				Waiting *struct {
 					Reason  string `json:"reason"`
@@ -530,6 +540,41 @@ type IPAddressPool struct {
 			ServiceSelectors   []LabelSelector `json:"serviceSelectors,omitempty"`
 		} `json:"serviceAllocation,omitempty"`
 	} `json:"spec"`
+}
+
+// --- Workloads, RBAC & Webhooks (for policy/operator introspection) ---
+
+type Workload struct {
+	Kind     string     `json:"kind"`
+	Metadata ObjectMeta `json:"metadata"`
+	Spec     struct {
+		Selector *LabelSelector `json:"selector,omitempty"`
+	} `json:"spec"`
+}
+
+type RBACSubject struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type RBACBinding struct {
+	Metadata ObjectMeta    `json:"metadata"`
+	Subjects []RBACSubject `json:"subjects,omitempty"`
+}
+
+type WebhookConfiguration struct {
+	Metadata ObjectMeta `json:"metadata"`
+	Webhooks []struct {
+		Name         string `json:"name"`
+		ClientConfig struct {
+			Service *struct {
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+				Port      *int   `json:"port,omitempty"`
+			} `json:"service,omitempty"`
+		} `json:"clientConfig"`
+	} `json:"webhooks,omitempty"`
 }
 
 // --- Helpers ---
