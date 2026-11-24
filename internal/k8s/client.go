@@ -78,6 +78,18 @@ func (c *Client) GetNamespace(ctx context.Context, name string) (Namespace, erro
 	return ns, err
 }
 
+func (c *Client) ListNamespaces(ctx context.Context) ([]Namespace, error) {
+	var list List[Namespace]
+	err := c.GetJSON(ctx, &list, "namespaces")
+	return list.Items, err
+}
+
+func (c *Client) GetPod(ctx context.Context, namespace, name string) (Pod, error) {
+	var p Pod
+	err := c.GetJSON(ctx, &p, "pod", name, "-n", namespace)
+	return p, err
+}
+
 func (c *Client) ListPods(ctx context.Context, namespace, selector string) ([]Pod, error) {
 	args := []string{"pods"}
 	if namespace == "" {
@@ -115,6 +127,49 @@ func (c *Client) GetEndpoints(ctx context.Context, namespace, name string) (Endp
 	var ep Endpoints
 	err := c.GetJSON(ctx, &ep, "endpoints", name, "-n", namespace)
 	return ep, err
+}
+
+func (c *Client) ListEndpoints(ctx context.Context, namespace string) ([]Endpoints, error) {
+	args := []string{"endpoints"}
+	if namespace == "" {
+		args = append(args, "-A")
+	} else {
+		args = append(args, "-n", namespace)
+	}
+	var list List[Endpoints]
+	err := c.GetJSON(ctx, &list, args...)
+	return list.Items, err
+}
+
+func (c *Client) GetWorkload(ctx context.Context, resource, namespace, name string) (Workload, error) {
+	var w Workload
+	err := c.GetJSON(ctx, &w, resource, name, "-n", namespace)
+	return w, err
+}
+
+func (c *Client) ListRoleBindings(ctx context.Context, namespace string) ([]RBACBinding, error) {
+	var list List[RBACBinding]
+	err := c.GetJSON(ctx, &list, "rolebindings", "-n", namespace)
+	return list.Items, err
+}
+
+func (c *Client) ListClusterRoleBindings(ctx context.Context) ([]RBACBinding, error) {
+	var list List[RBACBinding]
+	err := c.GetJSON(ctx, &list, "clusterrolebindings")
+	return list.Items, err
+}
+
+func (c *Client) ListWebhookConfigurations(ctx context.Context) ([]WebhookConfiguration, error) {
+	var out []WebhookConfiguration
+	var vList List[WebhookConfiguration]
+	if err := c.GetJSON(ctx, &vList, "validatingwebhookconfigurations"); err == nil {
+		out = append(out, vList.Items...)
+	}
+	var mList List[WebhookConfiguration]
+	if err := c.GetJSON(ctx, &mList, "mutatingwebhookconfigurations"); err == nil {
+		out = append(out, mList.Items...)
+	}
+	return out, nil
 }
 
 func (c *Client) GetSecret(ctx context.Context, namespace, name string) (Secret, error) {

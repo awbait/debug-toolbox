@@ -19,6 +19,12 @@
      ```bash
      mesh-debug ztunnel -n <namespace> --format json
      ```
+   - Карта связей и проверка NetworkPolicy / AuthorizationPolicy / PeerAuthentication / ztunnel для любого пода (workload, оператор, ingress, waypoint) + симуляция `--to` и генерация `values.yaml` для чарта `policies`:
+     ```bash
+     mesh-debug policies -n <namespace> <pod|deploy/name> --format json
+     mesh-debug policies -n <namespace> <pod> --to kube-apiserver --to other-ns/svc:8080 --format json
+     mesh-debug policies -n <namespace> <pod> --capture 30s --emit-policies --format yaml
+     ```
    - Общая проверка control plane / OVN / Kyverno:
      ```bash
      mesh-debug status --format json
