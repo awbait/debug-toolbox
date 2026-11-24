@@ -243,6 +243,12 @@ func (c *Client) ListSubnets(ctx context.Context) ([]Subnet, error) {
 	return list.Items, err
 }
 
+func (c *Client) ListIPAddressPools(ctx context.Context) ([]IPAddressPool, error) {
+	var list List[IPAddressPool]
+	err := c.GetJSON(ctx, &list, "ipaddresspools.metallb.io", "-A")
+	return list.Items, err
+}
+
 func (c *Client) ListWarningEvents(ctx context.Context, namespace string) ([]Event, error) {
 	var list List[Event]
 	err := c.GetJSON(ctx, &list, "events", "-n", namespace, "--field-selector", "type=Warning")

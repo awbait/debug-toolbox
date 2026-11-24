@@ -35,7 +35,7 @@ func Run(ctx context.Context, c *k8s.Client, opts Options) *report.Report {
 
 	// Layer 1: Control plane & release namespace
 	ztunnelNS, ztunnelPods := common.CheckControlPlane(ctx, c, r, false)
-	_, err := common.CheckNamespaceMesh(ctx, c, r, "Namespace", opts.Namespace, false)
+	gwNSInfo, err := common.CheckNamespaceMesh(ctx, c, r, "Namespace", opts.Namespace, false)
 	if err != nil {
 		r.Finalize(c.Runner.History(), opts.Verbose)
 		return r
@@ -81,7 +81,7 @@ func Run(ctx context.Context, c *k8s.Client, opts Options) *report.Report {
 	warnEvents, _ := c.ListWarningEvents(ctx, opts.Namespace)
 
 	for _, gw := range gateways {
-		diagnoseSingleGateway(ctx, c, r, gw, allRoutes, certs, extSecrets, destRules, warnEvents, ztunnelNS, ztunnelPods, opts)
+		diagnoseSingleGateway(ctx, c, r, gw, gwNSInfo.Namespace, allRoutes, certs, extSecrets, destRules, warnEvents, ztunnelNS, ztunnelPods, opts)
 	}
 
 	r.Finalize(c.Runner.History(), opts.Verbose)
@@ -93,6 +93,7 @@ func diagnoseSingleGateway(
 	c *k8s.Client,
 	r *report.Report,
 	gw k8s.Gateway,
+	gwNSObj k8s.Namespace,
 	allRoutes []k8s.Route,
 	certs []k8s.Certificate,
 	extSecrets []k8s.ExternalSecret,
@@ -168,7 +169,7 @@ func diagnoseSingleGateway(
 	}
 
 	// Gateway Service & MetalLB VIP
-	vip := checkGatewayService(ctx, c, r, gwLayer, gw)
+	vip := checkGatewayService(ctx, c, r, gwLayer, gw, gwNSObj, warnEvents)
 
 	// Warning events for this Gateway / Service / Pods
 	var gwEventLines []string
@@ -391,50 +392,6 @@ func checkGatewayConditions(r *report.Report, layer string, gw k8s.Gateway) {
 				fmt.Sprintf("Programmed=True, attachedRoutes=%d", ls.AttachedRoutes))
 		}
 	}
-}
-
-func checkGatewayService(ctx context.Context, c *k8s.Client, r *report.Report, layer string, gw k8s.Gateway) string {
-	ns := gw.Metadata.Namespace
-	svcName := gw.Metadata.Name + "-istio"
-	svc, err := c.GetService(ctx, ns, svcName)
-	if err != nil {
-		// Fallback: try same name as Gateway
-		svc, err = c.GetService(ctx, ns, gw.Metadata.Name)
-		if err != nil {
-			r.Fail("gw-svc-"+gw.Metadata.Name, layer, ns+"/"+svcName, "Gateway LoadBalancer Service",
-				fmt.Sprintf("service %s not found: %v", svcName, err),
-				"Check istiod Gateway controller logs")
-			return ""
-		}
-	}
-
-	res := ns + "/" + svc.Metadata.Name
-	requestedIP := svc.Metadata.Annotations["metallb.io/loadBalancerIPs"]
-	var assignedIP string
-	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		assignedIP = svc.Status.LoadBalancer.Ingress[0].IP
-		if assignedIP == "" {
-			assignedIP = svc.Status.LoadBalancer.Ingress[0].Hostname
-		}
-	}
-
-	if svc.Spec.Type == "LoadBalancer" && assignedIP == "" {
-		r.Fail("gw-vip-"+gw.Metadata.Name, layer, res, "MetalLB VIP allocation",
-			fmt.Sprintf("Service type=LoadBalancer has NO external IP (requested=%q)", requestedIP),
-			"Check MetalLB IPAddressPool / L2Advertisement, IP collision, and Service events")
-		return ""
-	}
-	if requestedIP != "" && assignedIP != "" && requestedIP != assignedIP {
-		r.Fail("gw-vip-match-"+gw.Metadata.Name, layer, res, "MetalLB VIP match",
-			fmt.Sprintf("requested metallb.io/loadBalancerIPs=%s, but got %s", requestedIP, assignedIP),
-			"Check MetalLB annotation and IPAddressPool range")
-		return assignedIP
-	}
-
-	r.Pass("gw-svc-"+gw.Metadata.Name, layer, res, "Gateway Service & VIP",
-		fmt.Sprintf("type=%s, VIP=%s, externalTrafficPolicy=%s, clusterIP=%s",
-			svc.Spec.Type, assignedIP, svc.Spec.ExternalTrafficPolicy, svc.Spec.ClusterIP))
-	return assignedIP
 }
 
 func loadAllRoutes(ctx context.Context, c *k8s.Client, ns string) []k8s.Route {
