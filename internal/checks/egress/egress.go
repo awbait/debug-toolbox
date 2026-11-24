@@ -833,9 +833,13 @@ func checkEgressPolicies(ctx context.Context, c *k8s.Client, r *report.Report, t
 			continue
 		}
 		var egressNPs []k8s.NetworkPolicy
+		hasNSWide := false
 		for _, np := range nps {
 			if hasPolicyType(np, "Egress") {
 				egressNPs = append(egressNPs, np)
+				if len(np.Spec.PodSelector.MatchLabels) == 0 && len(np.Spec.PodSelector.MatchExpressions) == 0 {
+					hasNSWide = true
+				}
 			}
 		}
 		if len(egressNPs) == 0 {
@@ -844,10 +848,14 @@ func checkEgressPolicies(ctx context.Context, c *k8s.Client, r *report.Report, t
 		if allowsEgressToNSPort(egressNPs, wpNS, 15008) {
 			r.Pass("egw-np-senders-"+sNS, layer, "ns/"+sNS, "Senders Egress NetworkPolicy -> waypoint:15008",
 				fmt.Sprintf("egress from %s to %s:15008 (HBONE) permitted", sNS, wpNS))
-		} else {
+		} else if hasNSWide {
 			r.Fail("egw-np-senders-"+sNS, layer, "ns/"+sNS, "Senders Egress NetworkPolicy -> waypoint:15008",
-				fmt.Sprintf("namespace %s has Egress NetworkPolicy, but NONE allows TCP 15008 to waypoint namespace %s!", sNS, wpNS),
+				fmt.Sprintf("namespace %s has namespace-wide Egress NetworkPolicy, but NONE allows TCP 15008 to waypoint namespace %s!", sNS, wpNS),
 				fmt.Sprintf("Enable networkPolicy.senders=true in egress-gateway or add Egress NetworkPolicy allowing %s:15008 in %s", wpNS, sNS))
+		} else {
+			r.Info("egw-np-senders-"+sNS, layer, "ns/"+sNS, "Senders Egress NetworkPolicy -> waypoint:15008",
+				fmt.Sprintf("namespace %s has %d pod-scoped Egress NetworkPolicy(ies) (none namespace-wide); verify sender pods are not selected by them without TCP 15008 to %s",
+					sNS, len(egressNPs), wpNS))
 		}
 	}
 

@@ -236,6 +236,7 @@ func diagnoseSingleGateway(
 	// Inspect each unique backend Service, Endpoints, Pods & mesh enrollment
 	backendAmbient := make(map[string]bool)
 	backendPodsByKey := make(map[string][]k8s.Pod)
+	backendSvcSelectors := make(map[string]map[string]string)
 	backendSvcIPs := make(map[string]string)
 	checkedBackendNS := make(map[string]bool)
 	checkedSvc := make(map[string]bool)
@@ -268,6 +269,7 @@ func diagnoseSingleGateway(
 			continue
 		}
 		backendSvcIPs[svcKey] = svc.Spec.ClusterIP
+		backendSvcSelectors[svcKey] = svc.Spec.Selector
 
 		if svc.Metadata.Labels[common.LabelIngressUseWP] == "true" {
 			warnAffinityWithWaypoint(r, routeLayer, destRules, t.Namespace, t.ServiceName)
@@ -339,7 +341,7 @@ func diagnoseSingleGateway(
 	}
 
 	// --- Layer 5: Policies & OIDC ---
-	checkGatewayPolicies(ctx, c, r, gw, targets, backendAmbient)
+	checkGatewayPolicies(ctx, c, r, gw, targets, backendAmbient, backendPodsByKey, backendSvcSelectors)
 
 	// --- Layer 6: Runtime Logs (Gateway Envoy + ztunnel on affected nodes) ---
 	const logLayer = "Logs & ztunnel"

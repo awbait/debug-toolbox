@@ -107,6 +107,8 @@ func checkGatewayPolicies(
 	gw k8s.Gateway,
 	targets []backendTarget,
 	backendAmbient map[string]bool,
+	backendPodsByKey map[string][]k8s.Pod,
+	backendSvcSelectors map[string]map[string]string,
 ) {
 	const layer = "Policies"
 	gwNS := gw.Metadata.Namespace
@@ -179,39 +181,59 @@ func checkGatewayPolicies(
 	}
 
 	for bNS, bTargets := range seenNS {
-		// Backend NetworkPolicy ingress check
+		// Backend NetworkPolicy ingress check (scoped to NPs whose podSelector matches backend pods)
 		bNPs, err := c.ListNetworkPolicies(ctx, bNS)
 		if err == nil {
-			var ingressNPs []k8s.NetworkPolicy
+			var allIngressNPs []k8s.NetworkPolicy
 			for _, np := range bNPs {
 				if hasPolicyType(np, "Ingress") {
-					ingressNPs = append(ingressNPs, np)
+					allIngressNPs = append(allIngressNPs, np)
 				}
 			}
-			if len(ingressNPs) > 0 {
+			if len(allIngressNPs) > 0 {
 				for _, t := range bTargets {
-					allowApp := ingressAllowsFromNSAndPort(ingressNPs, gwNS, gwName, t.Port, t.Protocol)
-					allowHBONE := ingressAllowsFromNSAndPort(ingressNPs, gwNS, gwName, 15008, "TCP")
+					svcKey := fmt.Sprintf("%s/%s:%d", t.Namespace, t.ServiceName, t.Port)
+					bPods := backendPodsByKey[svcKey]
+					svcSel := backendSvcSelectors[svcKey]
+
+					var matchingNPs []k8s.NetworkPolicy
+					for _, np := range allIngressNPs {
+						if npSelectsBackend(np, bPods, svcSel) {
+							matchingNPs = append(matchingNPs, np)
+						}
+					}
+					if len(matchingNPs) == 0 {
+						r.Info("np-backend-"+bNS+"-"+t.ServiceName, layer, bNS+"/"+t.ServiceName,
+							fmt.Sprintf("Backend Ingress NetworkPolicy (%s:%d)", t.ServiceName, t.Port),
+							fmt.Sprintf("0 of %d Ingress NetworkPolicy(ies) in %s select pods of Service %s (unrestricted ingress)",
+								len(allIngressNPs), bNS, t.ServiceName))
+						continue
+					}
+
+					allowApp := ingressAllowsFromNSAndPort(matchingNPs, gwNS, gwName, t.Port, t.Protocol)
+					allowHBONE := ingressAllowsFromNSAndPort(matchingNPs, gwNS, gwName, 15008, "TCP")
 					if backendAmbient[bNS] && t.Protocol == "TCP" && !allowHBONE {
-						r.Fail("np-backend-hbone-"+bNS, layer, "ns/"+bNS,
-							fmt.Sprintf("Backend Ingress NetworkPolicy (%s)", bNS),
-							fmt.Sprintf("namespace %s has Ingress NetworkPolicy, is in ambient mesh, but NO policy allows TCP 15008 (HBONE) from gateway namespace %s", bNS, gwNS),
+						r.Fail("np-backend-hbone-"+bNS, layer, bNS+"/"+t.ServiceName,
+							fmt.Sprintf("Backend Ingress NetworkPolicy (%s/%s)", bNS, t.ServiceName),
+							fmt.Sprintf("backend Service %s/%s is selected by %d Ingress NetworkPolicy(ies) and is in ambient mesh, but NONE allows TCP 15008 (HBONE) from gateway namespace %s",
+								bNS, t.ServiceName, len(matchingNPs), gwNS),
 							fmt.Sprintf("Add Ingress NetworkPolicy in %s allowing TCP 15008 (and %d) from gateway pods in %s", bNS, t.Port, gwNS))
 					} else if !backendAmbient[bNS] && !allowApp {
-						r.Fail("np-backend-port-"+bNS, layer, "ns/"+bNS,
-							fmt.Sprintf("Backend Ingress NetworkPolicy (%s:%d)", bNS, t.Port),
-							fmt.Sprintf("namespace %s has Ingress NetworkPolicy, but NO policy allows %s/%d from %s", bNS, t.Protocol, t.Port, gwNS),
+						r.Fail("np-backend-port-"+bNS, layer, bNS+"/"+t.ServiceName,
+							fmt.Sprintf("Backend Ingress NetworkPolicy (%s/%s:%d)", bNS, t.ServiceName, t.Port),
+							fmt.Sprintf("backend Service %s/%s is selected by %d Ingress NetworkPolicy(ies), but NONE allows %s/%d from %s",
+								bNS, t.ServiceName, len(matchingNPs), t.Protocol, t.Port, gwNS),
 							fmt.Sprintf("Add Ingress NetworkPolicy in %s allowing %s/%d from gateway pods in %s", bNS, t.Protocol, t.Port, gwNS))
 					} else {
-						r.Pass("np-backend-"+bNS+"-"+strconv.Itoa(t.Port), layer, "ns/"+bNS,
-							fmt.Sprintf("Backend Ingress NetworkPolicy (%s:%d)", bNS, t.Port),
+						r.Pass("np-backend-"+bNS+"-"+strconv.Itoa(t.Port), layer, bNS+"/"+t.ServiceName,
+							fmt.Sprintf("Backend Ingress NetworkPolicy (%s/%s:%d)", bNS, t.ServiceName, t.Port),
 							fmt.Sprintf("allows gateway from %s (appPort=%v, hbone15008=%v)", gwNS, allowApp, allowHBONE))
 					}
 				}
 			}
 		}
 
-		// Backend AuthorizationPolicy check
+		// Backend AuthorizationPolicy check (scoped to policies matching backend pods or Service)
 		aps, err := c.ListAuthorizationPolicies(ctx, bNS)
 		if err != nil {
 			continue
@@ -222,7 +244,7 @@ func checkGatewayPolicies(
 			continue
 		}
 
-		// Warn on L7 rules in AuthorizationPolicy when namespace has no waypoint
+		// Warn on L7 rules in workload AuthorizationPolicy when namespace has no waypoint
 		for _, ap := range aps {
 			if hasL7Rules(ap) && len(ap.Spec.TargetRefs) == 0 {
 				r.Warn("ap-l7-"+bNS+"-"+ap.Metadata.Name, layer, bNS+"/"+ap.Metadata.Name,
@@ -233,17 +255,40 @@ func checkGatewayPolicies(
 		}
 
 		for _, t := range bTargets {
+			svcKey := fmt.Sprintf("%s/%s:%d", t.Namespace, t.ServiceName, t.Port)
+			bPods := backendPodsByKey[svcKey]
+			svcSel := backendSvcSelectors[svcKey]
+
+			var matchingAllowAPs []k8s.AuthorizationPolicy
+			for _, ap := range aps {
+				if !apAppliesToBackend(ap, t.ServiceName, bPods, svcSel) {
+					continue
+				}
+				action := strings.ToUpper(ap.Spec.Action)
+				if action == "" || action == "ALLOW" {
+					matchingAllowAPs = append(matchingAllowAPs, ap)
+				}
+			}
+
 			portStr := strconv.Itoa(t.Port)
-			allowedBy := findAllowingAuthzPolicy(aps, gwNS, gwPrincipalSuffix, portStr)
+			if len(matchingAllowAPs) == 0 {
+				r.Info("ap-backend-"+bNS+"-"+t.ServiceName+"-"+portStr, layer, bNS+"/"+t.ServiceName,
+					fmt.Sprintf("Backend AuthorizationPolicy (%s:%d)", t.ServiceName, t.Port),
+					fmt.Sprintf("0 of %d AuthorizationPolicy(ies) in %s apply ALLOW rules to Service %s (no implicit deny on this backend)",
+						len(aps), bNS, t.ServiceName))
+				continue
+			}
+
+			allowedBy := findAllowingAuthzPolicy(matchingAllowAPs, gwNS, gwPrincipalSuffix, portStr)
 			if allowedBy != "" {
 				r.Pass("ap-backend-"+bNS+"-"+portStr, layer, bNS+"/"+allowedBy,
 					fmt.Sprintf("Backend AuthorizationPolicy (%s:%d)", bNS, t.Port),
 					fmt.Sprintf("ALLOW policy %q permits gateway principal *%s on port %s", allowedBy, gwPrincipalSuffix, portStr))
 			} else {
-				r.Fail("ap-backend-"+bNS+"-"+portStr, layer, "ns/"+bNS,
+				r.Fail("ap-backend-"+bNS+"-"+portStr, layer, bNS+"/"+t.ServiceName,
 					fmt.Sprintf("Backend AuthorizationPolicy (%s:%d)", bNS, t.Port),
-					fmt.Sprintf("namespace %s has %d AuthorizationPolicy(ies) (Istio implicit deny active), but NONE explicitly allows gateway principal *%s on port %s",
-						bNS, len(aps), gwPrincipalSuffix, portStr),
+					fmt.Sprintf("backend Service %s/%s is matched by %d ALLOW AuthorizationPolicy(ies) (Istio implicit deny active), but NONE explicitly allows gateway principal *%s on port %s",
+						bNS, t.ServiceName, len(matchingAllowAPs), gwPrincipalSuffix, portStr),
 					fmt.Sprintf("Add ALLOW AuthorizationPolicy in %s with principal cluster.local%s and port %q (string)", bNS, gwPrincipalSuffix, portStr))
 			}
 		}
@@ -299,6 +344,47 @@ func npMatchesGateway(np k8s.NetworkPolicy, gwName string) bool {
 		return true
 	}
 	return np.Spec.PodSelector.MatchLabels[common.LabelGatewayName] == gwName
+}
+
+func selectorIsEmpty(sel k8s.LabelSelector) bool {
+	return len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0
+}
+
+func selectorMatchesBackend(sel k8s.LabelSelector, pods []k8s.Pod, svcSelector map[string]string) bool {
+	if selectorIsEmpty(sel) {
+		return true
+	}
+	if len(pods) > 0 {
+		for _, p := range pods {
+			if matchesLabelSelector(sel, p.Metadata.Labels) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(svcSelector) > 0 {
+		return matchesLabelSelector(sel, svcSelector)
+	}
+	return false
+}
+
+func npSelectsBackend(np k8s.NetworkPolicy, pods []k8s.Pod, svcSelector map[string]string) bool {
+	return selectorMatchesBackend(np.Spec.PodSelector, pods, svcSelector)
+}
+
+func apAppliesToBackend(ap k8s.AuthorizationPolicy, svcName string, pods []k8s.Pod, svcSelector map[string]string) bool {
+	if len(ap.Spec.TargetRefs) > 0 {
+		for _, tr := range ap.Spec.TargetRefs {
+			if strings.EqualFold(tr.Kind, "Service") && tr.Name == svcName {
+				return true
+			}
+		}
+		return false
+	}
+	if ap.Spec.Selector == nil {
+		return true
+	}
+	return selectorMatchesBackend(*ap.Spec.Selector, pods, svcSelector)
 }
 
 func hasPolicyType(np k8s.NetworkPolicy, pt string) bool {

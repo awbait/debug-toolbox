@@ -82,6 +82,12 @@ func checkGatewayService(
 		r.Pass("gw-svc-"+gw.Metadata.Name, layer, res, "Gateway Service & VIP",
 			fmt.Sprintf("type=%s, VIP=%s, externalTrafficPolicy=%s, clusterIP=%s",
 				svc.Spec.Type, strings.Join(assignedIPs, ","), svc.Spec.ExternalTrafficPolicy, svc.Spec.ClusterIP))
+		if strings.EqualFold(svc.Spec.ExternalTrafficPolicy, "Local") {
+			r.Warn("gw-svc-etp-"+gw.Metadata.Name, layer, res, "Gateway Service externalTrafficPolicy",
+				fmt.Sprintf("externalTrafficPolicy=Local (platform standard is Cluster): in-cluster pods on nodes without a gateway pod will time out reaching VIP %s, and external traffic only lands on nodes with local gateway pods",
+					strings.Join(assignedIPs, ",")),
+				"Use externalTrafficPolicy: Cluster unless preserving client source IP with Local is explicitly required")
+		}
 		return assignedIP
 	}
 
