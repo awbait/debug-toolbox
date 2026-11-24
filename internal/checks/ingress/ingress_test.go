@@ -67,7 +67,7 @@ func baseHealthyIngressRunner(t *testing.T, certNotAfter time.Time, certDNS []st
 	f.On("kubectl get pods -n app-igw -l gateway.networking.k8s.io/gateway-name=ed-dev-igw-nbox-main -o json",
 		`{"items":[{"metadata":{"name":"ed-dev-igw-nbox-main-istio-abc","namespace":"app-igw"},"spec":{"nodeName":"node-1"},"status":{"phase":"Running","podIP":"10.0.1.10","containerStatuses":[{"name":"istio-proxy","ready":true}]}}]}`)
 	f.On("kubectl get service ed-dev-igw-nbox-main-istio -n app-igw -o json",
-		`{"metadata":{"name":"ed-dev-igw-nbox-main-istio","namespace":"app-igw","annotations":{"metallb.io/loadBalancerIPs":"10.193.10.50"}},"spec":{"type":"LoadBalancer","clusterIP":"10.96.1.10","externalTrafficPolicy":"Local"},"status":{"loadBalancer":{"ingress":[{"ip":"10.193.10.50"}]}}}`)
+		`{"metadata":{"name":"ed-dev-igw-nbox-main-istio","namespace":"app-igw","annotations":{"metallb.io/loadBalancerIPs":"10.193.10.50"}},"spec":{"type":"LoadBalancer","clusterIP":"10.96.1.10","externalTrafficPolicy":"Cluster"},"status":{"loadBalancer":{"ingress":[{"ip":"10.193.10.50"}]}}}`)
 	f.On("kubectl get secret ed-dev-secret-main-nbox-https -n app-igw -o json",
 		`{"metadata":{"name":"ed-dev-secret-main-nbox-https","namespace":"app-igw"},"type":"kubernetes.io/tls","data":{"tls.crt":"`+crtB64+`","tls.key":"`+keyB64+`"}}`)
 	f.On("kubectl get certificates.cert-manager.io -n app-igw -o json",
@@ -89,7 +89,7 @@ func baseHealthyIngressRunner(t *testing.T, certNotAfter time.Time, certDNS []st
 	f.On("kubectl get endpoints web -n app-backend -o json",
 		`{"metadata":{"name":"web","namespace":"app-backend"},"subsets":[{"addresses":[{"ip":"10.0.2.20","nodeName":"node-1"}],"ports":[{"port":8080}]}]}`)
 	f.On("kubectl get pods -n app-backend -l app=web -o json",
-		`{"items":[{"metadata":{"name":"web-0","namespace":"app-backend","annotations":{"ambient.istio.io/redirection":"enabled"}},"spec":{"nodeName":"node-1"},"status":{"phase":"Running","podIP":"10.0.2.20","containerStatuses":[{"name":"web","ready":true}]}}]}`)
+		`{"items":[{"metadata":{"name":"web-0","namespace":"app-backend","labels":{"app":"web"},"annotations":{"ambient.istio.io/redirection":"enabled"}},"spec":{"nodeName":"node-1"},"status":{"phase":"Running","podIP":"10.0.2.20","containerStatuses":[{"name":"web","ready":true}]}}]}`)
 	f.On("kubectl get networkpolicies -n app-igw -o json",
 		`{"items":[{"metadata":{"name":"ed-dev-np-nbox-main","namespace":"app-igw"},"spec":{"podSelector":{"matchLabels":{"gateway.networking.k8s.io/gateway-name":"ed-dev-igw-nbox-main"}},"policyTypes":["Ingress","Egress"],"egress":[{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"istio-system"}}}],"ports":[{"port":15012,"protocol":"TCP"}]},{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}}}],"ports":[{"port":1053,"protocol":"UDP"}]},{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"app-backend"}}}],"ports":[{"port":8080,"protocol":"TCP"},{"port":15008,"protocol":"TCP"}]}]}}]}`)
 	f.On("kubectl get networkpolicies -n app-backend -o json",
@@ -175,5 +175,59 @@ func TestIngressBrokenScenarios(t *testing.T) {
 	}
 	if !strings.Contains(md.String(), "Recommended Actions") {
 		t.Errorf("expected Recommended Actions in markdown output")
+	}
+}
+
+func TestIngressUnrelatedBackendNPAndAPDoNotFalseFail(t *testing.T) {
+	f := baseHealthyIngressRunner(t, time.Now().Add(90*24*time.Hour), []string{"app.idp.ecpk.test"})
+
+	// Non-mesh backend namespace (like tech-console) with:
+	// 1) An Ingress NetworkPolicy selecting ONLY valkey pods (not web pods)
+	// 2) An AuthorizationPolicy selecting ONLY valkey pods, plus one targeting a Gateway via targetRefs
+	f.On("kubectl get namespace app-backend -o json",
+		`{"metadata":{"name":"app-backend"}}`)
+	f.On("kubectl get networkpolicies -n app-backend -o json",
+		`{"items":[{"metadata":{"name":"valkey-console-valkey","namespace":"app-backend"},"spec":{"podSelector":{"matchLabels":{"app":"valkey"}},"policyTypes":["Ingress"],"ingress":[{"ports":[{"port":6379,"protocol":"TCP"},{"port":26379,"protocol":"TCP"}]}]}}]}`)
+	f.On("kubectl get authorizationpolicies.security.istio.io -n app-backend -o json",
+		`{"items":[`+
+			`{"metadata":{"name":"valkey-only","namespace":"app-backend"},"spec":{"selector":{"matchLabels":{"app":"valkey"}},"action":"ALLOW","rules":[{"to":[{"operation":{"ports":["6379"]}}]}]}},`+
+			`{"metadata":{"name":"gw-policy","namespace":"app-backend"},"spec":{"targetRefs":[{"kind":"Gateway","name":"ed-dev-igw-nbox-main"}],"action":"ALLOW","rules":[{"to":[{"operation":{"ports":["443"]}}]}]}}`+
+			`]}`)
+
+	rep := Run(context.Background(), k8s.NewClient(f, "", "", ""), Options{Version: "test", Namespace: "app-igw"})
+	if rep.Summary.Verdict != "HEALTHY" {
+		var buf bytes.Buffer
+		_ = report.Write(&buf, rep, report.FormatOptions{Format: "text"})
+		t.Fatalf("expected HEALTHY when only unrelated valkey NP/AP exist, got %s:\n%s", rep.Summary.Verdict, buf.String())
+	}
+}
+
+func TestIngressMatchingBackendNPStillFailsAndLocalETPWarns(t *testing.T) {
+	f := baseHealthyIngressRunner(t, time.Now().Add(90*24*time.Hour), []string{"app.idp.ecpk.test"})
+
+	// 1) Gateway Service uses externalTrafficPolicy: Local -> should WARN gw-svc-etp-*
+	f.On("kubectl get service ed-dev-igw-nbox-main-istio -n app-igw -o json",
+		`{"metadata":{"name":"ed-dev-igw-nbox-main-istio","namespace":"app-igw","annotations":{"metallb.io/loadBalancerIPs":"10.193.10.50"}},"spec":{"type":"LoadBalancer","clusterIP":"10.96.1.10","externalTrafficPolicy":"Local"},"status":{"loadBalancer":{"ingress":[{"ip":"10.193.10.50"}]}}}`)
+
+	repWarn := Run(context.Background(), k8s.NewClient(f, "", "", ""), Options{Version: "test", Namespace: "app-igw"})
+	if repWarn.Summary.Verdict != "DEGRADED" || repWarn.ExitCode() != 0 {
+		t.Fatalf("expected DEGRADED (exit 0) for externalTrafficPolicy=Local, got %s (exit %d)", repWarn.Summary.Verdict, repWarn.ExitCode())
+	}
+	etpChk, ok := findCheck(repWarn, "gw-svc-etp-ed-dev-igw-nbox-main")
+	if !ok || etpChk.Status != report.StatusWarn {
+		t.Fatalf("expected WARN check gw-svc-etp-ed-dev-igw-nbox-main, got: %+v", etpChk)
+	}
+
+	// 2) Now add a NetworkPolicy that DOES select app=web (missing port 15008) -> must FAIL
+	f.On("kubectl get networkpolicies -n app-backend -o json",
+		`{"items":[{"metadata":{"name":"web-only-8080","namespace":"app-backend"},"spec":{"podSelector":{"matchLabels":{"app":"web"}},"policyTypes":["Ingress"],"ingress":[{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"app-igw"}}}],"ports":[{"port":8080,"protocol":"TCP"}]}]}}]}`)
+
+	repFail := Run(context.Background(), k8s.NewClient(f, "", "", ""), Options{Version: "test", Namespace: "app-igw"})
+	if repFail.Summary.Verdict != "BROKEN" {
+		t.Fatalf("expected BROKEN when matching NP omits 15008, got %s", repFail.Summary.Verdict)
+	}
+	npChk, ok := findCheck(repFail, "np-backend-hbone-app-backend")
+	if !ok || npChk.Status != report.StatusFail {
+		t.Fatalf("expected FAIL check np-backend-hbone-app-backend, got: %+v", npChk)
 	}
 }
