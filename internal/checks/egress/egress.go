@@ -147,7 +147,12 @@ func Run(ctx context.Context, c *k8s.Client, opts Options) *report.Report {
 	var vegPods []k8s.Pod
 	var wpPods []k8s.Pod
 	if topo.VEG != nil {
-		vegPods = checkVpcEgressGateway(ctx, c, r, *topo.VEG, subnetByName, subnetsByNS, ambientNS, topo.Mode)
+		vegPods = checkVpcEgressGateway(ctx, c, r, *topo.VEG, allVEGs, subnetByName, subnetsByNS, ambientNS, topo.Mode)
+	} else if misaligned, matchedSenders := findMisalignedMeshVEG(topo, allVEGs, subnetsByNS); misaligned != nil {
+		reportMisalignedMeshVEG(r, *misaligned, *topo.Waypoint, matchedSenders)
+		// Still inspect the misaligned VEG (subnets, externalIPs, pod IPAM events, ambient capture)
+		// so all root causes surface in a single run.
+		vegPods = checkVpcEgressGateway(ctx, c, r, *misaligned, allVEGs, subnetByName, subnetsByNS, ambientNS, topo.Mode)
 	} else {
 		r.Warn("veg-missing", "VpcEgressGateway", "ns/"+opts.Namespace, "VpcEgressGateway",
 			"no VpcEgressGateway found selecting this waypoint/namespace (external traffic will exit via node SNAT, not a fixed VIP)",
@@ -346,6 +351,7 @@ func checkVpcEgressGateway(
 	c *k8s.Client,
 	r *report.Report,
 	veg k8s.VpcEgressGateway,
+	allVEGs []k8s.VpcEgressGateway,
 	subnetByName map[string]k8s.Subnet,
 	subnetsByNS map[string][]k8s.Subnet,
 	ambientNS map[string]bool,
@@ -414,7 +420,7 @@ func checkVpcEgressGateway(
 		}
 	}
 
-	// 5. VEG CR status & replicas vs externalIPs
+	// 5. VEG CR status, externalSubnet/externalIPs validation & replicas vs externalIPs
 	if len(veg.Spec.ExternalIPs) == 0 {
 		r.Fail("veg-ips", layer, vegRes, "VEG externalIPs", "spec.externalIPs is empty", "Configure externalIPs in vpcEgressGateway")
 	} else if veg.Spec.Replicas != len(veg.Spec.ExternalIPs) {
@@ -422,13 +428,15 @@ func checkVpcEgressGateway(
 			fmt.Sprintf("replicas=%d differs from len(externalIPs)=%d", veg.Spec.Replicas, len(veg.Spec.ExternalIPs)),
 			"Align spec.replicas with the number of externalIPs")
 	}
+	checkVEGSubnetsAndIPs(r, layer, veg, allVEGs, subnetByName, subnetsByNS)
+
 	if veg.Status.Ready {
 		r.Pass("veg-status", layer, vegRes, "VpcEgressGateway status",
 			fmt.Sprintf("Ready=true, externalIPs=%v, externalSubnet=%s", veg.Spec.ExternalIPs, veg.Spec.ExternalSubnet))
 	} else {
 		r.Fail("veg-status", layer, vegRes, "VpcEgressGateway status",
 			fmt.Sprintf("Ready=%v (phase=%q), externalIPs=%v", veg.Status.Ready, veg.Status.Phase, veg.Spec.ExternalIPs),
-			"Check kube-ovn-controller logs, externalSubnet (egress-vip), nodeSelector/tolerations, and VEG pods in "+vegNS)
+			"Check kube-ovn-controller logs, externalSubnet ("+veg.Spec.ExternalSubnet+"), nodeSelector/tolerations, and VEG pods in "+vegNS)
 	}
 
 	// 6. VEG pods & ambient redirection check (CRITICAL filestash cause #2!)
@@ -437,6 +445,7 @@ func checkVpcEgressGateway(
 		vegPods, _ = c.ListPods(ctx, vegNS, "app=vpc-egress-gateway")
 	}
 	if len(vegPods) == 0 {
+		checkVEGPodEvents(ctx, c, r, layer, veg, subnetByName)
 		r.Fail("veg-pods", layer, vegRes, "VEG pods",
 			fmt.Sprintf("0 VEG pods found in namespace %s", vegNS),
 			"Check VEG Deployment, ResourceQuota (LimitRange), PodSecurity (needs privileged), and nodeSelector/tolerations")
@@ -464,10 +473,14 @@ func checkVpcEgressGateway(
 			fmt.Sprintf("all %d VEG pod(s) are free from ambient redirection", len(vegPods)))
 	}
 
+	if !veg.Status.Ready || ready < len(vegPods) {
+		checkVEGPodEvents(ctx, c, r, layer, veg, subnetByName)
+	}
+
 	if ready == 0 {
 		r.Fail("veg-pods-ready", layer, vegRes, "VEG pods Ready",
 			fmt.Sprintf("0/%d VEG pods Ready", len(vegPods)),
-			"Inspect VEG pod events/logs (check privileged PodSecurity, LimitRange, and Multus net1 attachment)")
+			"Inspect VEG pod events/logs (check Kube-OVN Subnet IPAM, privileged PodSecurity, LimitRange, and Multus net1 attachment)")
 	} else if ready < len(vegPods) {
 		r.Warn("veg-pods-ready", layer, vegRes, "VEG pods Ready",
 			fmt.Sprintf("%d/%d VEG pods Ready", ready, len(vegPods)),

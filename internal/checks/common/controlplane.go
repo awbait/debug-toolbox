@@ -142,6 +142,20 @@ func CheckControlPlane(ctx context.Context, c *k8s.Client, r *report.Report, ful
 
 	// 7. MetalLB / cert-manager / external-secrets (best-effort informational)
 	checkOptionalComponent(ctx, c, r, "cp-metallb", layer, "metallb-system", "", "MetalLB")
+	if pools, err := c.ListIPAddressPools(ctx); err == nil {
+		if len(pools) == 0 {
+			r.Warn("cp-metallb-pools", layer, "metallb/IPAddressPool", "MetalLB IPAddressPools",
+				"0 IPAddressPool resources found in cluster (LoadBalancer Services will fail with 'not allowed in config')",
+				"Create MetalLB IPAddressPool and L2Advertisement/BGPAdvertisement")
+		} else {
+			var lines []string
+			for _, p := range pools {
+				lines = append(lines, fmt.Sprintf("%s/%s: %v", p.Metadata.Namespace, p.Metadata.Name, p.Spec.Addresses))
+			}
+			r.Pass("cp-metallb-pools", layer, "metallb/IPAddressPool", "MetalLB IPAddressPools",
+				fmt.Sprintf("%d IPAddressPool(s) configured", len(pools)), lines...)
+		}
+	}
 	checkOptionalComponent(ctx, c, r, "cp-cert-manager", layer, "cert-manager", "", "cert-manager")
 	checkOptionalComponent(ctx, c, r, "cp-eso", layer, "external-secrets", "", "External Secrets Operator")
 

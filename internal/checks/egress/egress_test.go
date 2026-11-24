@@ -30,7 +30,7 @@ func baseHealthyMeshEgressRunner() *k8s.FakeRunner {
 	f.On("kubectl get vpcegressgateways.kubeovn.io -A -o json",
 		`{"items":[{"metadata":{"name":"ed-dev-veg-nbox-vip","namespace":"nbox-dev-ns-veg-vip"},"spec":{"vpc":"ovn-cluster","replicas":1,"externalSubnet":"egress-vip","externalIPs":["10.193.97.5"],"selectors":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"nbox-dev-ns-egw-eg"}},"podSelector":{"matchLabels":{"gateway.networking.k8s.io/gateway-name":"ed-dev-wp-nbox-eg"}}}]},"status":{"ready":true}}]}`)
 	f.On("kubectl get subnets.kubeovn.io -o json",
-		`{"items":[{"metadata":{"name":"nbox-dev-subnet-egw-eg"},"spec":{"cidrBlock":"172.19.20.0/28","private":false,"namespaces":["nbox-dev-ns-egw-eg"]}},{"metadata":{"name":"nbox-dev-subnet-veg-vip"},"spec":{"cidrBlock":"172.19.21.0/29","private":false,"namespaces":["nbox-dev-ns-veg-vip"]}}]}`)
+		`{"items":[{"metadata":{"name":"nbox-dev-subnet-egw-eg"},"spec":{"cidrBlock":"172.19.20.0/28","private":false,"namespaces":["nbox-dev-ns-egw-eg"]}},{"metadata":{"name":"nbox-dev-subnet-veg-vip"},"spec":{"cidrBlock":"172.19.21.0/29","private":false,"namespaces":["nbox-dev-ns-veg-vip"]}},{"metadata":{"name":"egress-vip"},"spec":{"cidrBlock":"10.193.97.0/24","gateway":"10.193.97.1","provider":"egress-vip.kube-system"}}]}`)
 
 	// Namespaces
 	f.On("kubectl get namespace nbox-app -o json",
@@ -196,7 +196,7 @@ func TestEgressDirectModeConflicts(t *testing.T) {
 	f.On("kubectl get vpcegressgateways.kubeovn.io -A -o json",
 		`{"items":[{"metadata":{"name":"ed-dev-veg-nex-vip","namespace":"nex-veg"},"spec":{"vpc":"ovn-cluster","replicas":1,"externalSubnet":"egress-vip","externalIPs":["10.193.97.2"],"policies":[{"snat":true,"subnets":["nex-subnet","missing-subnet"]}]},"status":{"ready":true}}]}`)
 	f.On("kubectl get subnets.kubeovn.io -o json",
-		`{"items":[{"metadata":{"name":"nex-subnet"},"spec":{"cidrBlock":"172.19.30.0/24","private":true,"namespaces":["tech-nexus"]}},{"metadata":{"name":"nex-veg-subnet"},"spec":{"cidrBlock":"172.19.31.0/29","private":true,"namespaces":["nex-veg"]}}]}`)
+		`{"items":[{"metadata":{"name":"nex-subnet"},"spec":{"cidrBlock":"172.19.30.0/24","private":true,"namespaces":["tech-nexus"]}},{"metadata":{"name":"nex-veg-subnet"},"spec":{"cidrBlock":"172.19.31.0/29","private":true,"namespaces":["nex-veg"]}},{"metadata":{"name":"egress-vip"},"spec":{"cidrBlock":"10.193.97.0/24","gateway":"10.193.97.1","provider":"egress-vip.kube-system"}}]}`)
 
 	// tech-nexus wrongly has ambient enabled while using direct VEG + private subnet
 	f.On("kubectl get namespace tech-nexus -o json",

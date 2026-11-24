@@ -93,6 +93,7 @@ type Service struct {
 	Spec     struct {
 		Type                  string            `json:"type"`
 		ClusterIP             string            `json:"clusterIP"`
+		LoadBalancerIP        string            `json:"loadBalancerIP,omitempty"`
 		ExternalTrafficPolicy string            `json:"externalTrafficPolicy"`
 		Selector              map[string]string `json:"selector"`
 		Ports                 []struct {
@@ -475,6 +476,8 @@ type VpcEgressGateway struct {
 	Spec     struct {
 		VPC            string   `json:"vpc"`
 		Replicas       int      `json:"replicas"`
+		InternalSubnet string   `json:"internalSubnet,omitempty"`
+		InternalIPs    []string `json:"internalIPs,omitempty"`
 		ExternalSubnet string   `json:"externalSubnet"`
 		ExternalIPs    []string `json:"externalIPs"`
 		Selectors      []struct {
@@ -503,12 +506,30 @@ type Subnet struct {
 		Private      bool     `json:"private"`
 		NatOutgoing  bool     `json:"natOutgoing"`
 		AllowSubnets []string `json:"allowSubnets,omitempty"`
+		ExcludeIPs   []string `json:"excludeIps,omitempty"`
 		Namespaces   []string `json:"namespaces,omitempty"`
 		Provider     string   `json:"provider,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		Conditions []Condition `json:"conditions,omitempty"`
 	} `json:"status"`
+}
+
+// --- MetalLB ---
+
+type IPAddressPool struct {
+	Metadata ObjectMeta `json:"metadata"`
+	Spec     struct {
+		Addresses         []string `json:"addresses"`
+		AutoAssign        *bool    `json:"autoAssign,omitempty"`
+		AvoidBuggyIPs     bool     `json:"avoidBuggyIPs,omitempty"`
+		ServiceAllocation *struct {
+			Priority           int             `json:"priority,omitempty"`
+			Namespaces         []string        `json:"namespaces,omitempty"`
+			NamespaceSelectors []LabelSelector `json:"namespaceSelectors,omitempty"`
+			ServiceSelectors   []LabelSelector `json:"serviceSelectors,omitempty"`
+		} `json:"serviceAllocation,omitempty"`
+	} `json:"spec"`
 }
 
 // --- Helpers ---
